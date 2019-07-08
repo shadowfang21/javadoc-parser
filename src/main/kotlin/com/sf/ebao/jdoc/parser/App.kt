@@ -51,7 +51,8 @@ fun main(args : Array<String>) {
 		}
 	});
 	
-	var msgSet = HashSet<String>();
+    methodRuleSet.forEach { it.evalLinkedRule(methodRuleSet) };
+    
 	methodRuleSet
 		.filter {
 			val methodName : String = it.methodName;
@@ -62,15 +63,11 @@ fun main(args : Array<String>) {
 			val methodName : String = PublicTargetMethod.valueOf(it.methodName.split("_").first()).strData;
 			
 //			println("------- $methodName -------");
-			it.evalLinkedRule(methodRuleSet);
+//			it.evalLinkedRule(methodRuleSet);
 			it.showRule(methodName + ",");
-	//		it.showMethod();
+//			it.showMethod();
 			
-	//		it.getRules().forEach {
-	//			msgSet.addAll(it.key);
-	//		}
 		}
-//	msgSet.forEach(::println);
 }
 
 class JdocRuleVisitor(var methodName : String) : ASTVisitor(false) {
@@ -99,8 +96,9 @@ class JdocRuleVisitor(var methodName : String) : ASTVisitor(false) {
 //					}
 							.joinToString(",");
 
-
-					ruleSet.addRule(JdocRule(node.name.identifier, desc));
+					if (!desc.isEmpty()) {
+					    ruleSet.addRule(JdocRule(node.name.identifier, desc));
+                    }
 				} 
 				node.arguments()
 						.map { it as Expression }

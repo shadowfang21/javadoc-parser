@@ -42,7 +42,7 @@ class JdocRuleSet(var methodName : String) {
 		
 		relatedMethod.forEach {
 			val targetMethod = it;
-			declaredMethods.find {
+            declaredMethods.find {
 				it.methodName == targetMethod
 			}?.let {
 				relatedRule.add(it);

@@ -2178,8 +2178,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             final AgentChlVO agentVO = vo.getAgentChlVO(agentScService);
             
             //normat agent
-            //result.addIgnoreNull(this.validateAgentTest(context, agentVO, prefix[i], policyId));
-            result.addIgnoreNull(this.validateAgentTest(context, agentVO));
+            result.addIgnoreNull(this.validateAgentTest(context, agentVO, prefix[i], policyId));
             i++;
         }
         return result;
@@ -2195,26 +2194,26 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param types
      * @return
      */
-//    private ScPtValidateResult validateAgentTest(ScPtValidateContext context, final AgentChlVO agentVO, 
-//                    final String prefix, long policyId) {
-//        final ScPtValidateResult result = new ScPtValidateResult();
-//
-//        //normat agent
-//        if (this.isLegalAgent(agentVO)) {
-//            if (this.validateAgentStatus(agentVO) == null) {
-//            	
-//            	final Set<Integer> types = this.getQualificationTypes(context, policyId); //cached
-//            	final Set<Integer> agentTypeSet = this.getAgentTestType(context, agentVO.getAgentId()); //cachced
-//            	
-//                for (Integer typeId : types) {
-//                    result.addIgnoreNull(ScPtMsgVO.decorator(prefix,
-//                                    this.validateAgentTest(agentTypeSet, typeId)));
-//                }
-//            }
-//        }
-//        
-//        return result;
-//    }
+    private ScPtValidateResult validateAgentTest(ScPtValidateContext context, final AgentChlVO agentVO, 
+                    final String prefix, long policyId) {
+        final ScPtValidateResult result = new ScPtValidateResult();
+
+        //normat agent
+        if (this.isLegalAgent(agentVO)) {
+            if (this.validateAgentStatus(agentVO) == null) {
+            	
+            	final Set<Integer> types = this.getQualificationTypes(context, policyId); //cached
+            	final Set<Integer> agentTypeSet = this.getAgentTestType(context, agentVO.getAgentId()); //cachced
+            	
+                for (Integer typeId : types) {
+                    result.addIgnoreNull(ScPtMsgVO.decorator(prefix,
+                                    this.validateAgentTest(agentTypeSet, typeId)));
+                }
+            }
+        }
+        
+        return result;
+    }
     
     
     /**
@@ -2944,9 +2943,9 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     private ScPtMsgVO validatePolicyHolder(long policyId, String certiCode) {
         ScPtMsgVO msg = null;
         
-//        if (!contractMasterService.validatePolicyHolder(policyId, certiCode)) {
+        if (!contractMasterService.validatePolicyHolder(policyId, certiCode)) {
             msg = ScPtMsgVO.error("MSG_1262205"); //要保人錯誤
-//        }
+        }
         
         return msg;
     }
@@ -2965,9 +2964,9 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     private ScPtMsgVO validatePolicyInsuredList(long policyId, String certiCode) {
         ScPtMsgVO msg = null;
         
-//        if (!contractMasterService.validatePolicyInsuredList(policyId, certiCode)) {
+        if (!contractMasterService.validatePolicyInsuredList(policyId, certiCode)) {
             msg = ScPtMsgVO.error("MSG_1262206"); // 被保人錯誤
-//        }
+        }
         
         return msg;
     }

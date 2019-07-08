@@ -26,15 +26,12 @@ import com.ebao.ls.chl.service.ChannelOrgService;
 import com.ebao.ls.chl.vo.AgentPositionVO;
 import com.ebao.ls.chl.vo.ChannelOrgVO;
 import com.ebao.ls.pa.pub.ref.api.prd.ProductService;
-import com.ebao.ls.pub.util.TGLDateUtil;
 import com.ebao.ls.sc.Constant;
 import com.ebao.ls.sc.agent.vo.BusinessCate;
 import com.ebao.ls.sc.agent.vo.FakeAgent;
-import com.ebao.ls.sc.data.bo.PolicyProducerRole;
 import com.ebao.ls.sc.service.agent.AgentQueryService;
 import com.ebao.ls.sc.service.agent.AgentQueryService.ActiveAgentStatusPredicdate;
 import com.ebao.ls.sc.service.agent.AgentQueryService.InforceAgentStatusPredicdate;
-import com.ebao.ls.sc.service.agent.AgentQueryService.LeaveAgentStatusPredicdate;
 import com.ebao.ls.sc.service.agent.AgentRewardPunishScService;
 import com.ebao.ls.sc.service.agent.AgentScService;
 import com.ebao.ls.sc.service.org.ScPersonalInfoLockService;
@@ -58,7 +55,6 @@ import com.ebao.ls.sc.service.transfer.ScPtReportInfoService;
 import com.ebao.ls.sc.service.transfer.ScPtValidateContext;
 import com.ebao.ls.sc.service.transfer.ScPtValidateService;
 import com.ebao.ls.sc.service.transfer.ScTransferPolicyService;
-import com.ebao.ls.sc.serviceImpl.transfer.PolicyProducerRoleServiceImpl.ProducerIdPredicate;
 import com.ebao.ls.sc.vo.AgentChlVO;
 import com.ebao.ls.sc.vo.BRBDCommonPtFileVO;
 import com.ebao.ls.sc.vo.ChannelRole;
@@ -89,10 +85,10 @@ import com.ebao.pub.i18n.lang.CodeTable;
  * <p>Updater: TGL155</p>
  * <p>Update Comments: </p>
  * 
- * <RULE_DEF>
- *   <RULE name="warnCaseExists" level="warn">檢核保單是否存在尚未歸檔的受理案件，受理編號尚未歸檔</RULE>
- *   <RULE name="nothingChange" level="error">未修改任何資料</RULE>
- * </RULE_DEF>
+ * 
+ * @rule : warn 檢核保單是否存在尚未歸檔的受理案件，受理編號尚未歸檔
+ * 
+ * 
  */
 public class ScPtValidateServiceImpl implements ScPtValidateService {
     
@@ -253,7 +249,14 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                         vo.getNewServiceRegisterId() != null, 
                         vo.getNewCommRegisterId() != null));
         
+        
+        /** 此保單需要的資格證種類 */
+        final Set<Integer> types = this.getQualificationTypes(vo.getPolicyId(), 
+                        policy.getApplyDate());
+        
+        
         final AgentChlVO oriAgent = context.getInputAgent(agentScService, vo.getOriAgentId());
+        
         
         ProducerRole[] role = null;
         //轉出業務員是否存在於保單之中
@@ -279,32 +282,14 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         if (vo.getNewServiceRegisterId() != null) {
             if (!vo.getNewServiceRegisterId().equals(vo.getOriAgentId())) {
                 final AgentChlVO serviceAgent = context.getInputAgent(agentScService, vo.getNewServiceRegisterId());
-                //PCR 300148 : 20190703增加 新增檢核條件：當另一共享業務員或服務業務員不具一般人身保險資格時由代數主管或直屬主管承接
-                ScPtValidateResult anotherResult = this.validateAgentTest(context, serviceAgent, NEW_SERVICE_MSG_CODE, policy.getPolicyId());
-                if (anotherResult != null && !anotherResult.getMsgs().isEmpty()) {
-                    
-                    if (anotherResult.hasError()) {
-                    	if (null != vo.getOriNewServiceAgentId()) {
-                    		final AgentChlVO oriServiceAgent = context.getInputAgent(agentScService, vo.getOriNewServiceAgentId());
-                        	vo.setNewServiceRegisterId(oriServiceAgent.getAgentId());
-                        	vo.setNewServiceRegisterCode(oriServiceAgent.getRegisterCode());
-                        	vo.setNewServiceRegisterName(oriServiceAgent.getAgentName());
-                    	}
-                    }
-                }
-                
-                final AgentChlVO serviceNewAgent = context.getInputAgent(agentScService, vo.getNewServiceRegisterId());
-                
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
-                                this.validateAgentNotGrpFake(serviceNewAgent)));
-                result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, serviceNewAgent));
+                                this.validateAgentNotGrpFake(serviceAgent)));
+                result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, serviceAgent));
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
-                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oriAgent, serviceNewAgent)));
-                
-                result.addIgnoreNull(this.validateAgentTest(context, serviceNewAgent, NEW_SERVICE_MSG_CODE, policy.getPolicyId()));
-                
-                result.addIgnoreNull(this.validateServiceShareLeaveAgent(policy.getPolicyId(), serviceNewAgent));
+                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oriAgent, serviceAgent)));
+                final Set<Integer> agentTestType = this.getAgentTestType(context, serviceAgent.getAgentId());
+                result.addIgnoreNull(this.validateAgentTest(serviceAgent, NEW_SERVICE_MSG_CODE, types, agentTestType));
                 
                 hasChanged = true;
             }
@@ -312,32 +297,18 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         if (vo.getNewCommRegisterId() != null) {
             if (!vo.getNewCommRegisterId().equals(vo.getOriAgentId())) {
                 final AgentChlVO commAgent = context.getInputAgent(agentScService, vo.getNewCommRegisterId());
-                //PCR 300148 : 20190703增加 新增檢核條件：當另一共享業務員或服務業務員不具一般人身保險資格時由代數主管或直屬主管承接
-                ScPtValidateResult anotherResult = this.validateAgentTest(context, commAgent, NEW_COMM_MSG_CODE, policy.getPolicyId());
-                if (anotherResult != null && !anotherResult.getMsgs().isEmpty()) {
-                    
-                    if (anotherResult.hasError()) {
-                    	if (null != vo.getOriNewCommAgentId()) {
-                    		final AgentChlVO oriCommAgent = context.getInputAgent(agentScService, vo.getOriNewCommAgentId());
-                        	vo.setNewCommRegisterId(oriCommAgent.getAgentId());
-                        	vo.setNewCommRegisterCode(oriCommAgent.getRegisterCode());
-                        	vo.setNewCommRegisterName(oriCommAgent.getAgentName());
-                    	}
-                    }
-                }
-                
-                final AgentChlVO commNewAgent = context.getInputAgent(agentScService, vo.getNewCommRegisterId());
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, 
-                                this.validateAgentNotGrpFake(commNewAgent)));
-                result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, commNewAgent));
+                                this.validateAgentNotGrpFake(commAgent)));
+                result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, commAgent));
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, 
-                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oriAgent, commNewAgent)));
+                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oriAgent, commAgent)));
                 
-                result.addIgnoreNull(this.validateAgentTest(context, commNewAgent, NEW_COMM_MSG_CODE, policy.getPolicyId()));
+                final Set<Integer> agentTestType = this.getAgentTestType(context, commAgent.getAgentId());
+                result.addIgnoreNull(this.validateAgentTest(commAgent, NEW_COMM_MSG_CODE, types, agentTestType));
                 
-//                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
-//                        vo.getNewCommRegisterId(), CommChoice.fromCode(vo.getNewCommChoice())));
+                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
+                        vo.getNewCommRegisterId(), CommChoice.fromCode(vo.getNewCommChoice())));
                 result.addIgnoreNull(this.validateCommonChoiceX(policy.getPolicyId(), oriAgent, CommChoice.fromCode(vo.getNewCommChoice())));
                 
                 hasChanged = true;
@@ -352,7 +323,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             result.addIgnoreNull(this.validateTransferAlertVersion(vo.getAcptReason(), false));
         }
         
-        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId(), vo.getNewStdDateDate()));
+        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId()));
         result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(vo.getNewStdDateDate()));
         
         if (!result.addIgnoreNull(this.validateAceptReasonOrphanOut(vo.getAcptReason())) ) {
@@ -363,7 +334,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         result.addIgnoreNull(validateOrphanIn(vo.getAcptReason(), oriAgent));
         result.addIgnoreNull(this.validateAgentDate(vo.getAcptReason(), oriAgent, vo.getNewStdDateDate()));
         result.addIgnoreNull(this.validateDismissChannel(vo.getAcptReason(), false));
-        result.addIgnoreNull(this.validateShareCount(vo.getPolicyId()));
         
         return result;
     }
@@ -381,40 +351,24 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         final AgentChlVO oldAgent = context.getInputAgent(agentScService, caseVO.getAgentId());
         
         final ContractMasterVO policy = contractMasterService.load(vo.getPolicyId());
+        /** 此保單需要的資格證種類 */
+        final Set<Integer> types = this.getQualificationTypes(vo.getPolicyId(), 
+                        policy.getApplyDate());
         
         boolean hasChange = false;
         if (vo.getNewServiceRegisterId() != null) {
             if (!vo.getNewServiceRegisterId().equals(caseVO.getAgentId())) {
                 final AgentChlVO serviceAgent = context.getInputAgent(agentScService, vo.getNewServiceRegisterId());
                 
-                //PCR 300148 : 20190703增加 新增檢核條件：當另一共享業務員或服務業務員不具一般人身保險資格時由代數主管或直屬主管承接
-                ScPtValidateResult anotherResult = this.validateAgentTest(context, serviceAgent, NEW_SERVICE_MSG_CODE, policy.getPolicyId());
-                if (anotherResult != null && !anotherResult.getMsgs().isEmpty()) {
-                    
-                    if (anotherResult.hasError()) {
-                    	if (null != vo.getOriNewServiceAgentId()) {
-                    		final AgentChlVO oriServiceAgent = context.getInputAgent(agentScService, vo.getOriNewServiceAgentId());
-                        	vo.setNewServiceRegisterId(oriServiceAgent.getAgentId());
-                        	vo.setNewServiceRegisterCode(oriServiceAgent.getRegisterCode());
-                        	vo.setNewServiceRegisterName(oriServiceAgent.getAgentName());
-                    	}
-                    }
-                }
+                result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
+                                this.validateAgentNotGrpFake(serviceAgent)));
+                result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, serviceAgent));
                 
-                final AgentChlVO serviceNewAgent = context.getInputAgent(agentScService, vo.getNewServiceRegisterId());
-                
+                final Set<Integer> agentTestType = this.getAgentTestType(context, serviceAgent.getAgentId());
+                result.addIgnoreNull(this.validateAgentTest(serviceAgent, NEW_SERVICE_MSG_CODE, types, agentTestType));
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
-                                this.validateAgentNotGrpFake(serviceNewAgent)));
-                result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, serviceNewAgent));
-                
-                result.addIgnoreNull(this.validateAgentTest(context, serviceNewAgent, NEW_SERVICE_MSG_CODE, vo.getPolicyId()));
-                
-                result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
-                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, serviceNewAgent)));
-                
-                result.addIgnoreNull(this.validateServiceShareLeaveAgent(policy.getPolicyId(), serviceNewAgent));
-                
+                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, serviceAgent)));
                 
                 hasChange = true;
             }
@@ -422,34 +376,19 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         if (vo.getNewCommRegisterId() != null) {
             if (!vo.getNewCommRegisterId().equals(caseVO.getAgentId())) {
                 final AgentChlVO commAgent = context.getInputAgent(agentScService, vo.getNewCommRegisterId());
-                //PCR 300148 : 20190703增加 新增檢核條件：當另一共享業務員或服務業務員不具一般人身保險資格時由代數主管或直屬主管承接
-                ScPtValidateResult anotherResult = this.validateAgentTest(context, commAgent, NEW_COMM_MSG_CODE, policy.getPolicyId());
-                if (anotherResult != null && !anotherResult.getMsgs().isEmpty()) {
-                    
-                    if (anotherResult.hasError()) {
-                    	if (null != vo.getOriNewCommAgentId()) {
-                    		final AgentChlVO oriCommAgent = context.getInputAgent(agentScService, vo.getOriNewCommAgentId());
-                        	vo.setNewCommRegisterId(oriCommAgent.getAgentId());
-                        	vo.setNewCommRegisterCode(oriCommAgent.getRegisterCode());
-                        	vo.setNewCommRegisterName(oriCommAgent.getAgentName());
-                    	}                    	
-                    }
-                }
-                
-                final AgentChlVO commNewAgent = context.getInputAgent(agentScService, vo.getNewCommRegisterId());
-               
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, 
-                                this.validateAgentNotGrpFake(commNewAgent)));
-                result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, commNewAgent));
+                                this.validateAgentNotGrpFake(commAgent)));
+                result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, commAgent));
               
-                result.addIgnoreNull(this.validateAgentTest(context, commNewAgent, NEW_COMM_MSG_CODE, vo.getPolicyId()));
+                final Set<Integer> agentTestType = this.getAgentTestType(context, commAgent.getAgentId());
+                result.addIgnoreNull(this.validateAgentTest(commAgent, NEW_COMM_MSG_CODE, types, agentTestType));
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, 
-                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, commNewAgent)));
+                                validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, commAgent)));
                 
-//                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
-//                                vo.getNewCommRegisterId(), CommChoice.fromCode(vo.getNewCommChoice())));
+                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
+                                vo.getNewCommRegisterId(), CommChoice.fromCode(vo.getNewCommChoice())));
                 result.addIgnoreNull(this.validateCommonChoiceX(policy.getPolicyId(), oldAgent, CommChoice.fromCode(vo.getNewCommChoice())));
                 
                 hasChange = true;
@@ -463,7 +402,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         result.addIgnoreNull(this.validateShareCount(vo.getPolicyId()));
         
         result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(vo.getNewStdDateDate()));
-        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId(), caseVO.getCaseId(), vo.getNewStdDateDate()));
+        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId(), caseVO.getCaseId()));
         
         result.addIgnoreNull(validateOrphanIn(caseVO.getAcptReason(), oldAgent));
         result.addIgnoreNull(this.validateDirectorCfmDateAndCommSettleDate(caseVO.getAcptReason(), vo.getNewStdDateDate(), oldAgent));
@@ -483,7 +422,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                         vo.getNewServiceRegisterId() != null, 
                         vo.getNewCommRegisterId() != null));
         
-//        result.addIgnoreNull(this.validatePolicyTransfered(vo.getCaseId(), vo.getPolicyId()));
+        result.addIgnoreNull(this.validatePolicyTransfered(vo.getCaseId(), vo.getPolicyId()));
         
         final ScPolicyTransferCaseVO caseVO = context.getCaseVO(scPolicyTransferCaseService, vo.getCaseId());
         final AgentChlVO agent = context.getInputAgent(agentScService, caseVO.getAgentId());
@@ -491,6 +430,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         
         if (vo.getPrintTransferNotify()) {
             result.addIgnoreNull(this.validateTransferAlertVersion(caseVO.getAcptReason(), false));
+            
         }
         
         result.addIgnoreNull(this.validateAllocate(context, vo));
@@ -547,9 +487,9 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                     result.addIgnoreNull(ScPtMsgVO.error("MSG_1261372")); //新佣金選擇欄輸入錯誤
                 }
             } else {
-//                if (ScPtFileTransferType.MODIFY.equals(policyType)) {
-//                    result.addIgnoreNull(ScPtMsgVO.error("MSG_1261373")); //新佣金選擇不可空白
-//                }
+                if (ScPtFileTransferType.MODIFY.equals(policyType)) {
+                    result.addIgnoreNull(ScPtMsgVO.error("MSG_1261373")); //新佣金選擇不可空白
+                }
             }
             
             if (StringUtils.isNotBlank(row.getVisitDeadline())) {
@@ -605,101 +545,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         return msg;
     }
     
-    /**
-     * 批次上傳修改檢核
-     * @param context
-     * @param row
-     * @return
-     */
-    private ScPtValidateResult validateBatchModify(final ScPtValidateContext context, final SingleCommonPtFileVO row) {
-    	final ScPtValidateResult result = new ScPtValidateResult();
-    	
-    	//上次轉手是否有修改領佣權
-        final PolicyLastTransferInfo lastTransInfo = scPolicyProducerChgService.getPolicyLastTransferInfo(row.getPolicyId());
-        
-        if (lastTransInfo != null) {
-            if (lastTransInfo.isCommChange()) {
-                row.setIsLastChangeComm(true);
-            }
-            
-            if (result.addIgnoreNull(this.validateLastTransAgentInfo(lastTransInfo, row))) {
-            	return result;
-            }
-            
-            //如果上傳檔案沒有傳入主管確認日的話就用上次的確認來計算
-            if (StringUtils.isBlank(row.getUploadDirectorCfmDate())) {
-            	
-            	Date date = lastTransInfo.getDirectorCfmDate();
-            	
-            	if (date == null) { //dc data might be null
-            		date = lastTransInfo.getChangeDate();
-            	}
-            	row.setUploadDirectorCfmDate(TGLDateUtil.format(date));
-            }
-            
-            final Date directorDate = CommonPtFileVO.parseDate(row.getUploadDirectorCfmDate()); //default or 
-            
-        	result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(directorDate));
-            
-        	AgentChlVO oldAgent = null;
-            //old agent related check
-            if (StringUtils.isNotEmpty(row.getFromAgentRegisterCode())) {
-            	long agentId = lastTransInfo.getOldAgentId(row.getFromAgentRegisterCode());
-            	
-            	final AgentChlVO agent = context.getInputAgent(agentScService, agentId);
-            	
-            	if (agent != null) {
-            		
-            		oldAgent = agent;
-            		
-            		if (!ChannelRole.getRoleFromAgentCate(agent.getAgentCate()).isExtenal()) {
-            			result.addIgnoreNull(this.validateAgentDate(row.getAcptReason(), agent, directorDate));
-                        
-                        result.addIgnoreNull(this.validateOrphanFieldTrasnferOut(
-                                        StringUtils.isNotEmpty(row.getNewServiceRegisterCode1()),
-                                        agent, row.getAcptReason(), 
-                                        Constant.YES_NO_ARRAY_Y.equals(row.getIsPrintTransferAlert()), 
-                                        row.getVisitingListDate(), row.getVisitDeadline()));
-                        
-                        result.addIgnoreNull(validateOrphanIn(row.getAcptReason(), agent));
-                        
-                        result.addIgnoreNull(this.validateDismissChannel(row.getAcptReason(), false));
-            		}
-            	}
-            }
-            
-            //new service agent related check
-            if (StringUtils.isNotEmpty(row.getNewServiceRegisterCode1())) {
-            	long agentId = lastTransInfo.getNewAgentId(row.getNewServiceRegisterCode1(), ProducerRole.SERVICE);
-            	
-            	final AgentChlVO agent = context.getInputAgent(agentScService, agentId);
-            	
-            	result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, this.validateDirectorCfmDateAndProbationDate(directorDate, oldAgent,  agent)));
-            }
-            
-            //new comm agent related check
-            if (StringUtils.isNotEmpty(row.getNewCommRegisterCode())) {
-            	
-            	long agentId= lastTransInfo.getNewAgentId(row.getNewCommRegisterCode(), ProducerRole.COMMISION);
-            	
-            	final AgentChlVO agent = context.getInputAgent(agentScService, agentId);
-            	
-            	result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, this.validateDirectorCfmDateAndProbationDate(directorDate, oldAgent, agent)));
-            	
-            	if (StringUtils.isNotEmpty(row.getNewCommChoice1())) {
-                	result.addIgnoreNull(this.validateCommonChoiceX(lastTransInfo, CommChoice.valueOf(row.getNewCommChoice1())));
-                }
-            }
-            
-            result.addIgnoreNull(this.validateVisitDate(
-            		CommonPtFileVO.parseNullableDate(row.getVisitingListDate()), CommonPtFileVO.parseNullableDate(row.getVisitDeadline())));
-            
-        } else {
-            result.addIgnoreNull(ScPtMsgVO.error("MSG_1261348"));
-        }
-    	return result;
-    }
-    
     @Override
     public ScPtValidateResult validateBatchUploadTransfer(final ScPtValidateContext context, final SingleCommonPtFileVO row) {
         
@@ -725,14 +570,16 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                 return result;
             }
             
+            result.addIgnoreNull(this.validatePolicyHolder(policy.getPolicyId(), row.getHolderCertiCode()));
+            result.addIgnoreNull(this.validatePolicyInsuredList(policy.getPolicyId(), row.getInsuredCertiCode()));
+            
+            final Date directorDate = CommonPtFileVO.parseDate(row.getUploadDirectorCfmDate());
+            
+            result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(directorDate));
+            
             //如果為轉手的話
             if (!ScPtFileTransferType.MODIFY.equals(row.getPtPolicyType())) {
-            	
-            	result.addIgnoreNull(this.validatePolicyHolder(policy.getPolicyId(), row.getHolderCertiCode()));
-                result.addIgnoreNull(this.validatePolicyInsuredList(policy.getPolicyId(), row.getInsuredCertiCode()));
-            	
-            	final Date directorDate = CommonPtFileVO.parseDate(row.getUploadDirectorCfmDate());
-            	result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(directorDate));
+                
                 
                 AgentChlVO oldAgent = null;
                 if (StringUtils.isNotEmpty(row.getFromAgentRegisterCode())) { //前面format就已經判斷此欄位
@@ -792,6 +639,10 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                     }
                 }
                 
+                /** 此保單需要的資格證種類 */
+                final Set<Integer> types = this.getQualificationTypes(row.getPolicyId(), 
+                                policy.getApplyDate());
+                
                 Boolean hasChange = null;
                 
                 //新服務業務員檢核
@@ -825,11 +676,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                                             this.validateAgentNotGrpFake(newAgent)));
                             result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, newAgent));
                             result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, this.validateDirectorCfmDateAndProbationDate(directorDate, oldAgent,  newAgent)));
-                            
-                            result.addIgnoreNull(this.validateAgentTest(context, newAgent, NEW_SERVICE_MSG_CODE, policy.getPolicyId()));
-                            
-                            result.addIgnoreNull(this.validateServiceShareLeaveAgent(policy.getPolicyId(), newAgent));
-                            result.addIgnoreNull(this.warnShareServiceMerged(row));
+                            final Set<Integer> agentTestType = this.getAgentTestType(context, newAgent.getAgentId());
+                            result.addIgnoreNull(this.validateAgentTest(newAgent, NEW_SERVICE_MSG_CODE, types, agentTestType));
                             
                             hasChange = true;
                         }
@@ -865,43 +713,13 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                                             this.validateAgentNotGrpFake(newAgent)));
                             result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, newAgent));
                             result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, this.validateDirectorCfmDateAndProbationDate(directorDate, oldAgent, newAgent)));
-                            
-                            result.addIgnoreNull(this.validateAgentTest(context, newAgent, NEW_COMM_MSG_CODE, policy.getPolicyId()));
-                            
-                            
-                            //檢查是否為非共享件                            
-                            boolean notShareCommStatus = false;
-                            if (StringUtils.isNotBlank(row.getCommShareRate1()) && !row.getCommShareRate1().equals("100")) {
-                            	if (StringUtils.isNotBlank(row.getCommAgentRegisterCode1())) {
-                                	final AgentChlVO commAgent1 = context.getAgentByRegisterCode(agentQueryService, row.getCommAgentRegisterCode1());
-                                	if (BusinessCate.isFakePerson(commAgent1)) {
-                                		notShareCommStatus = true;
-                                	}
-                                }
-                            	if (StringUtils.isNotBlank(row.getCommAgentRegisterCode2())){
-                                	final AgentChlVO commAgent2= context.getAgentByRegisterCode(agentQueryService, row.getCommAgentRegisterCode2());
-                                	if (BusinessCate.isFakePerson(commAgent2)) {
-                                		notShareCommStatus = true;
-                                	}
-                                }
-                            	if (StringUtils.isNotBlank(row.getCommAgentRegisterCode3())) {
-                                	final AgentChlVO commAgent3= context.getAgentByRegisterCode(agentQueryService, row.getCommAgentRegisterCode3());
-                                	if (BusinessCate.isFakePerson(commAgent3)) {
-                                		notShareCommStatus = true;
-                                	}
-                                }
-                            }
-                            
-                            result.addIgnoreNull(this.warnNotShareCommMerged(row,notShareCommStatus));
-                            
-                            if (!notShareCommStatus) {
-                            	result.addIgnoreNull(this.warnShareCommMerged(row));
-                            }
+                            final Set<Integer> agentTestType = this.getAgentTestType(context, newAgent.getAgentId());
+                            result.addIgnoreNull(this.validateAgentTest(newAgent, NEW_COMM_MSG_CODE, types, agentTestType));
                             
                             //檢核佣金選擇與共享件是否適用
                             if (StringUtils.isNotBlank(row.getNewCommChoice1())) {
-//                                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
-//                                                newAgent.getAgentId(), CommChoice.valueOf(row.getNewCommChoice1())));
+                                result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
+                                                newAgent.getAgentId(), CommChoice.valueOf(row.getNewCommChoice1())));
                                 result.addIgnoreNull(this.validateCommonChoiceX(row.getPolicyId(), oldAgent, CommChoice.valueOf(row.getNewCommChoice1())));
                             } else {
                                 
@@ -910,8 +728,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                                     final CommChoice defaultCommChoice = 
                                                     scTransferPolicyService.getDefaultCommChoice(row.getPolicyId(), newAgent.getAgentId(), oldAgent.getAgentId());
                                     row.setNewCommChoice1(defaultCommChoice.name());
-//                                    result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
-//                                                    newAgent.getAgentId(), CommChoice.valueOf(row.getNewCommChoice1())));
+                                    result.addIgnoreNull(this.validateMergeCommChoice(policy.getPolicyId(), 
+                                                    newAgent.getAgentId(), CommChoice.valueOf(row.getNewCommChoice1())));
 
                                 }
                             }
@@ -925,12 +743,21 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                     result.addIgnoreNull(this.warnNothingChange(1, 1));
                 }
                 
-                result.addIgnoreNull(this.warnCaseExist(policy.getPolicyId(), directorDate));
+                result.addIgnoreNull(this.warnCaseExist(policy.getPolicyId()));
                 result.addIgnoreNull(this.validateShareCount(policy.getPolicyId()));
                 result.addIgnoreNull(this.validateVisitDate(
                 		CommonPtFileVO.parseNullableDate(row.getVisitingListDate()), CommonPtFileVO.parseNullableDate(row.getVisitDeadline())));
             } else {
-            	result.addIgnoreNull(this.validateBatchModify(context, row));
+                //上次轉手是否有修改領佣權
+                final PolicyLastTransferInfo lastTransInfo = scPolicyProducerChgService.getPolicyLastTransferInfo(row.getPolicyId());
+                
+                if (lastTransInfo != null) {
+                    if (lastTransInfo.isCommChange()) {
+                        row.setIsLastChangeComm(true);
+                    }
+                } else {
+                    result.addIgnoreNull(ScPtMsgVO.error("MSG_1261348"));
+                }
             }
             
             if (Constant.YES_NO_ARRAY_Y.equals(row.getIsPrintTransferAlert())) {
@@ -985,6 +812,9 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             
             result.addIgnoreNull(this.validateDirectorCfmDateLargerThanSystemDate(directorDate));
             
+            /** 此保單需要的資格證種類 */
+            final Set<Integer> types = this.getQualificationTypes(row.getPolicyId(), 
+                            policy.getApplyDate());
             
             //新服務業務員檢核
             if (StringUtils.isNotEmpty(row.getNewServiceRegisterCode1())) {
@@ -1018,7 +848,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                                     this.validateAgentNotGrpFake(newAgent)));
                     result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, newAgent));
 
-                    result.addIgnoreNull(this.validateAgentTest(context, newAgent, NEW_SERVICE_MSG_CODE, policy.getPolicyId()));
+                    final Set<Integer> agentTestType = this.getAgentTestType(context, newAgent.getAgentId());
+                    result.addIgnoreNull(this.validateAgentTest(newAgent, NEW_SERVICE_MSG_CODE, types, agentTestType));
                     
                     row.setNewServiceAgentId(newAgent.getAgentId());
                 }
@@ -1048,11 +879,12 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                                     this.validateAgentNotGrpFake(newAgent)));
                     result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, newAgent));
 
-                    result.addIgnoreNull(this.validateAgentTest(context, newAgent, NEW_COMM_MSG_CODE, policy.getPolicyId()));
+                    final Set<Integer> agentTestType = this.getAgentTestType(context, newAgent.getAgentId());
+                    result.addIgnoreNull(this.validateAgentTest(newAgent, NEW_COMM_MSG_CODE, types, agentTestType));
                 }
             }
             
-            result.addIgnoreNull(this.warnCaseExist(policy.getPolicyId(), directorDate));
+            result.addIgnoreNull(this.warnCaseExist(policy.getPolicyId()));
 
             if (Constant.YES_NO_ARRAY_Y.equals(row.getIsPrintTransferAlert())) {
                 if (StringUtils.isNotEmpty(row.getNewServiceRegisterCode1())) {
@@ -1090,9 +922,12 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         }
         
         
-        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId(), vo.getChgVO().getStdDirectorCfmDate()));
+        result.addIgnoreNull(this.warnCaseExist(vo.getPolicyId()));
         
         final ContractMasterVO policyVO = contractMasterService.load(vo.getPolicyId());
+        
+        final Set<Integer> types = this.getQualificationTypes(vo.getPolicyId(), 
+                        policyVO.getApplyDate());
         
         //  外部通路
         if (vo.isTransferToExternal()) {
@@ -1119,7 +954,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             result.addIgnoreNull(this.validateAgent(vo.getNewBrbdServiceAgent(), SERVICE_MSG_CODE));
             /** 此保單需要的資格證種類 */
             
-            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewBrbdServiceAgent(), SERVICE_MSG_CODE, vo.getPolicyId()));
+            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewBrbdServiceAgent(), SERVICE_MSG_CODE, types));
             
         } else {
         	result.addIgnoreNull(this.validateVisitDate(vo.getChgVO().getVisitingListDate(), vo.getChgVO().getVisitDeadline()));
@@ -1141,11 +976,11 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             result.addIgnoreNull(this.warnServiceAgentFakeExists(vo.getNewServiceAgent()));
             
             result.addIgnoreNull(this.validateAgent(vo.getNewServiceAgent(), SERVICE_MSG_CODE));
-            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewServiceAgent(), SERVICE_MSG_CODE, vo.getPolicyId()));
+            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewServiceAgent(), SERVICE_MSG_CODE, types));
             
             
             result.addIgnoreNull(this.validateAgent(vo.getNewCommAgent(), COMMISSION_MSG_CODE));
-            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewCommAgent(), COMMISSION_MSG_CODE, vo.getPolicyId()));
+            result.addIgnoreNull(this.validateAgentTest(context, vo.getNewCommAgent(), COMMISSION_MSG_CODE, types));
         }
         
         vo.analysis(); //排除未轉手資料
@@ -1269,7 +1104,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
 	            result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, newAgent));
 	            result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, 
                         validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, newAgent)));
-	            result.addIgnoreNull(this.warnShareCommMerged(vo));
 	            
 	            newServiceAgent = newAgent;
 	        }
@@ -1286,7 +1120,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                 result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, newAgent));
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, 
                         validateDirectorCfmDateAndProbationDate(vo.getNewStdDateDate(), oldAgent, newAgent)));
-                result.addIgnoreNull(this.warnShareCommMerged(vo));
                 
                 newCommAgent = newAgent;
             }
@@ -1426,8 +1259,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_SERVICE_MSG_CODE, this.validateAgentNotCoreFake(newAgent)));
                 result.addIgnoreNull(this.validateAgent(context, NEW_SERVICE_MSG_CODE, newAgent));
                 
-                result.addIgnoreNull(this.warnShareServiceMerged(row));
-                
                 row.setNewServiceAgentCertiCode(newAgent.getCertiCode());
                 row.setNewServiceAgentId(newAgent.getAgentId());
                 newServiceAgent = newAgent;
@@ -1454,8 +1285,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
                 
                 result.addIgnoreNull(ScPtMsgVO.decorator(NEW_COMM_MSG_CODE, this.validateAgentNotCoreFake(newAgent)));
                 result.addIgnoreNull(this.validateAgent(context, NEW_COMM_MSG_CODE, newAgent));
-                
-                result.addIgnoreNull(this.warnShareCommMerged(row));
                 
                 row.setNewCommAgentId(newAgent.getAgentId());
                 row.setNewCommAgentCertiCode(newAgent.getCertiCode());
@@ -1574,16 +1403,12 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             return result;
         }
         
-        if (result.addIgnoreNull(this.validatePolicyStateTransferable(policy.getRiskStatus()))) {
-        	return result;
-        }
-        
         if (result.addIgnoreNull(this.validatePolicyTransferedThisDay(policy.getPolicyId()))) {
             return result;
         }
         
         //服務與領佣須相同
-        if (!isForceTransfer && result.addIgnoreNull(this.validatePolicyServiceCommCompanyEqual(policy.getPolicyId()))) {
+        if (!isForceTransfer && result.addIgnoreNull(this.validatePolicyServiceCommEqual(policy.getPolicyId()))) {
             return result;
         }
         
@@ -1646,7 +1471,13 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
             if (agentChl != null) {
                 result.addIgnoreNull(this.validateAgentStatus(agentChl));
                 
-                result.addIgnoreNull(validateAgentTest(context, agentChl, NEW_SERVICE_MSG_CODE, policy.getPolicyId()));
+                /** 此保單需要的資格證種類 */
+                final Set<Integer> types = this.getQualificationTypes(policy.getPolicyId(), 
+                                policy.getApplyDate());
+                
+                final Set<Integer> agentTypeSet = this.getAgentTestType(context, agentChl.getAgentId());
+                
+                result.addIgnoreNull(validateAgentTest(agentChl, NEW_SERVICE_MSG_CODE, types, agentTypeSet));
                 
                 //serviceOrg nullable
                 if (serviceOrg != null) { //如果服務單位不為null，這是因為上傳的服務單位可能是錯的
@@ -1663,18 +1494,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         return result;
     }
     
-    @Override
-	public ScPtValidateResult validatePolicyTransferedElsewhere(Long detailChangeId, Long lastChangeId) {
-    	
-    	final ScPtValidateResult result = new ScPtValidateResult();
-    	
-    	if (!ObjectUtils.equals(detailChangeId, lastChangeId)) {
-    		result.addIgnoreNull(ScPtMsgVO.errorMsg("保單已執行後續轉手，不可於此受理執行取消轉手"));
-    	}
-    	
-		return result;
-	}
-    
     /**
      * 保費時計入帳日 > 最後轉手日則不能轉手
      * <RULE_SET>
@@ -1686,23 +1505,21 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     @Override
     public ScPtValidateResult validatePolicyCancelable(long policyId) {
         ScPtValidateResult result = new ScPtValidateResult();
-        
-        PolicyLastTransferInfo lastChange = scPolicyProducerChgService.getPolicyLastTransferInfo(policyId);
+        final ScPolicyProducerChgVO lastChange = 
+                        scPolicyProducerChgService.getLastActiveChange(policyId);
         
         if (lastChange != null) {
             //DC導入資料不可取消轉手
             if (315 == lastChange.getInsertedBy().longValue()) {
                 result.addIgnoreNull(ScPtMsgVO.error("MSG_1262638"));
             } else {
-            	if (lastChange.isCommChange()) {
-            		final Date lastFinishDate = lastChange.getChangeDate();
-                    
-                    final Date policyIncomeDate = contractMasterService.getLastPaidDate(policyId);
-                    
-                    if (policyIncomeDate != null && DateUtils.truncatedCompareTo(lastFinishDate, policyIncomeDate, Calendar.DATE) <= 0) {
-                        result.addIgnoreNull(ScPtMsgVO.error("MSG_1261349")); //保費已入帳
-                    } //else pass
-            	}
+                final Date lastFinishDate = lastChange.getChangeDate();
+                
+                final Date policyIncomeDate = contractMasterService.getLastPaidDate(policyId);
+                
+                if (policyIncomeDate != null && DateUtils.truncatedCompareTo(lastFinishDate, policyIncomeDate, Calendar.DATE) <= 0) {
+                    result.addIgnoreNull(ScPtMsgVO.error("MSG_1261349")); //保費已入帳
+                } //else pass
             }
         } else {
             result.addIgnoreNull(ScPtMsgVO.error("MSG_1261348")); //尚未有轉手紀錄
@@ -1750,8 +1567,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         }
         return msg;
     }
-    
-    
 
     /**
      * <p>Description : 僅轉領佣權且要列印轉換通知書</p>
@@ -1830,18 +1645,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     }
     
     /**
-     * 未生校保單不可轉手
-     * @return
-     */
-    private ScPtMsgVO validatePolicyStateTransferable(Integer liabilityState) {
-    	ScPtMsgVO msg = null;
-        if (new Integer(0).equals(liabilityState)) {
-            msg = ScPtMsgVO.error("未生效保單不可轉手");
-        }
-        return msg;
-    }
-    
-    /**
      * <p>Description : 原保單佣金選擇為X不可變更</p>
      * <RULE_SET>
      * 	  	<RULE level="error">原保單佣金選擇為X不可變更</RULE>
@@ -1852,53 +1655,20 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param newCommonChoice
      * @return
      */
-    private ScPtMsgVO validateCommonChoiceX(long policyId, AgentChlVO oriAgent, CommChoice newCommChoice) {
+    private ScPtMsgVO validateCommonChoiceX(long policyId, AgentChlVO oriAgent, CommChoice newCommonChoice) {
         ScPtMsgVO msg = null;
         
-        if (newCommChoice != null && !CommChoice.X.equals(newCommChoice) && oriAgent != null) {
+        if (newCommonChoice != null && !CommChoice.X.equals(newCommonChoice) && oriAgent != null) {
         	final Map<String, Object> commRole = policyProducerRoleService.getCommPolicyProducer(policyId, oriAgent.getAgentId());
         	
-        	if (null != commRole  && !commRole.isEmpty()) {
-        		final Integer oldCommChoice = MapUtils.getInteger(commRole, "COMMISSION_CHOICE");
-            	
-            	if (CommChoice.X.equals(CommChoice.fromCode(oldCommChoice))) {
-            		msg = ScPtMsgVO.error("MSG_1261359"); // 原保單佣金選擇為X不可變更
-                }
-        	}        	
+        	final Integer oldCommChoice = MapUtils.getInteger(commRole, "COMMISSION_CHOICE");
+        	
+        	if (CommChoice.X.equals(CommChoice.fromCode(oldCommChoice))) {
+        		msg = ScPtMsgVO.error("MSG_1261359"); // 原保單佣金選擇為X不可變更
+            }
+        	
         }
         return msg;
-    }
-    
-    /**
-     * 修改時檢核佣金選則
-     * @param lastTransInfo
-     * @param newCommChoice
-     * @return
-     */
-    private ScPtMsgVO validateCommonChoiceX(final PolicyLastTransferInfo lastTransInfo, CommChoice newCommChoice) {
-    	ScPtMsgVO msg = null;
-    	
-    	if (newCommChoice != null && !CommChoice.X.equals(newCommChoice) && lastTransInfo != null && lastTransInfo.isLastCommoiceX()) {
-    		msg = ScPtMsgVO.error("MSG_1261359"); // 原保單佣金選擇為X不可變更
-    	}
-    	
-    	return msg;
-    }
-    
-    /**
-     * 檢核上傳檔案是否與最後轉手內容相同
-     * @param lastTransInfo
-     * @return
-     */
-    private ScPtMsgVO validateLastTransAgentInfo(final PolicyLastTransferInfo lastTransInfo, final SingleCommonPtFileVO row) {
-    	ScPtMsgVO msg = null;
-    	
-    	if (lastTransInfo != null && !lastTransInfo.validateTransferInfo(row.getFromAgentRegisterCode(), 
-    			row.getNewCommRegisterCode(), row.getNewServiceRegisterCode1())) {
-    		msg = ScPtMsgVO.errorMsg("上傳業務員非前次上傳業務員");
-    	}
-    	
-    	return msg;
     }
     
     /**
@@ -1912,23 +1682,23 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param commChoice
      * @return
      */
-//    private ScPtMsgVO validateMergeCommChoice(long policyId, long toAgentId, CommChoice commChoice) {
-//        ScPtMsgVO msg = null;
-//        
-//        //為了節省效能如果確定是最高等的就不需要比了
-//        if (!commChoice.isMax()) {
-//            Map<String, Object> commRole = policyProducerRoleService.getCommPolicyProducer(policyId, toAgentId);
-//            
-//            if (commRole != null) {
-//                final Integer oldCommChoice = MapUtils.getInteger(commRole, "COMMISSION_CHOICE");
-//                
-//                if (commChoice.compareLevel(CommChoice.fromCode(oldCommChoice)) < 0) {
-//                    msg = ScPtMsgVO.error("MSG_1262644");
-//                }
-//            }
-//        }
-//        return msg;
-//    }
+    private ScPtMsgVO validateMergeCommChoice(long policyId, long toAgentId, CommChoice commChoice) {
+        ScPtMsgVO msg = null;
+        
+        //為了節省效能如果確定是最高等的就不需要比了
+        if (!commChoice.isMax()) {
+            Map<String, Object> commRole = policyProducerRoleService.getCommPolicyProducer(policyId, toAgentId);
+            
+            if (commRole != null) {
+                final Integer oldCommChoice = MapUtils.getInteger(commRole, "COMMISSION_CHOICE");
+                
+                if (commChoice.compareLevel(CommChoice.fromCode(oldCommChoice)) < 0) {
+                    msg = ScPtMsgVO.error("MSG_1262644");
+                }
+            }
+        }
+        return msg;
+    }
     
     /**
      * <p>Description : 同一保單同一天只可轉手一次不然就是要去取消轉手</p>
@@ -2171,15 +1941,16 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      */
     private ScPtValidateResult validateAgentTest(ScPtValidateContext context,
                     final List<ScPtNewRoleVO> newAgentRoles, 
-                    final String[] prefix, long policyId) {
+                    final String[] prefix, Set<Integer> types) {
         final ScPtValidateResult result = new ScPtValidateResult();
         int i = 0;
         for  (final ScPtNewRoleVO vo : newAgentRoles) {
             final AgentChlVO agentVO = vo.getAgentChlVO(agentScService);
             
+            final Set<Integer> agentTypeSet = this.getAgentTestType(context, agentVO.getAgentId());
+            
             //normat agent
-            //result.addIgnoreNull(this.validateAgentTest(context, agentVO, prefix[i], policyId));
-            result.addIgnoreNull(this.validateAgentTest(context, agentVO));
+            result.addIgnoreNull(this.validateAgentTest(agentVO, prefix[i], types, agentTypeSet, false));
             i++;
         }
         return result;
@@ -2195,26 +1966,22 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param types
      * @return
      */
-//    private ScPtValidateResult validateAgentTest(ScPtValidateContext context, final AgentChlVO agentVO, 
-//                    final String prefix, long policyId) {
-//        final ScPtValidateResult result = new ScPtValidateResult();
-//
-//        //normat agent
-//        if (this.isLegalAgent(agentVO)) {
-//            if (this.validateAgentStatus(agentVO) == null) {
-//            	
-//            	final Set<Integer> types = this.getQualificationTypes(context, policyId); //cached
-//            	final Set<Integer> agentTypeSet = this.getAgentTestType(context, agentVO.getAgentId()); //cachced
-//            	
-//                for (Integer typeId : types) {
-//                    result.addIgnoreNull(ScPtMsgVO.decorator(prefix,
-//                                    this.validateAgentTest(agentTypeSet, typeId)));
-//                }
-//            }
-//        }
-//        
-//        return result;
-//    }
+    private ScPtValidateResult validateAgentTest(final AgentChlVO agentVO, 
+                    final String prefix, Set<Integer> types, final Set<Integer> agentTypeSet, boolean fakeParameter) {
+        final ScPtValidateResult result = new ScPtValidateResult();
+
+        //normat agent
+        if (this.isLegalAgent(agentVO)) {
+            if (this.validateAgentStatus(agentVO) == null) {
+                for (Integer typeId : types) {
+                    result.addIgnoreNull(ScPtMsgVO.decorator(prefix,
+                                    this.validateAgentTest(agentTypeSet, typeId)));
+                }
+            }
+        }
+        
+        return result;
+    }
     
     
     /**
@@ -2427,7 +2194,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     /**
      * <p>Description : 保單服務與領佣須相同但不需100%</p>
      * <RULE_SET>
-     * 	  	<RULE level="error">此保單服務與領佣公司不同不可移轉</RULE>
+     * 	  	<RULE level="error">此保單服務與領佣不同不可移轉</RULE>
      * </RULE_SET>
      * <p>Created By : TGL155</p>
      * <p>Create Time : Dec 6, 2016</p>
@@ -2435,11 +2202,11 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param agentId
      * @return
      */
-    private ScPtMsgVO validatePolicyServiceCommCompanyEqual(long policyId) {
+    private ScPtMsgVO validatePolicyServiceCommEqual(long policyId) {
         ScPtMsgVO msg = null;
         
-        if (policyProducerRoleService.isPolicyServiceCommCompanyDiff(policyId)) {
-            msg = ScPtMsgVO.error("此保單服務與領佣公司不同不可移轉"); //此保單服務與領佣不同不可移轉
+        if (!policyProducerRoleService.isPolicyServiceCommSame(policyId)) {
+            msg = ScPtMsgVO.error("MSG_1262394"); //此保單服務與領佣不同不可移轉
         }
         return msg;
     }
@@ -2521,47 +2288,10 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         ScPtMsgVO msg = null;
         
         if (policyProducerRoleService.checkThreeRoleShareCase(policyId)) {
-            msg = ScPtMsgVO.error("三人共享件請至保單單筆轉手作業執行");
+            msg = ScPtMsgVO.error("MSG_1261355");
         }
         
         return msg;
-    }
-    
-    private ScPtMsgVO validateServiceShareLeaveAgent(long policyId, AgentChlVO newServiceAgent) {
-    	ScPtMsgVO msg = null;
-    	
-    	if (newServiceAgent != null) {
-    		if (BusinessCate.isFakeBusinessCate(newServiceAgent.getBusinessCate()) && 
-    				!FakeAgent.isFakeFakeAgent(newServiceAgent.getRegisterCode())) {
-	    		
-	    		List<PolicyProducerRole> currentServiceRoles = 
-	    				policyProducerRoleService.findActivePolicyProducerRole(policyId, null, ProducerRole.SERVICE);
-	    		
-	    		//validate if share case
-	    		if (currentServiceRoles.size() == 2) {
-	    			//要轉入的人在該保單下的role 
-        			final Collection<PolicyProducerRole> anotherOldAgentRoles = CollectionUtils.selectRejected(currentServiceRoles, 
-        					new ProducerIdPredicate(newServiceAgent.getAgentId()));
-        	        //validate if it's not transfer to another agent
-        	        if (!anotherOldAgentRoles.isEmpty()) {
-        	        	
-        	        	long otherAgentId = anotherOldAgentRoles.iterator().next().getProducerId();
-        	        	
-        	        	if (scPolicyTransferCaseService.isAlreadyAccpt(otherAgentId)) {
-        	        		msg = ScPtMsgVO.warnMsg("共享服務業務員已存在受理，若為同日執行轉手須至保單單筆轉手作業執行");
-        	        	} else {
-            	        	final AgentChlVO agent = agentScService.load(anotherOldAgentRoles.iterator().next().getProducerId());
-            	        	
-            	        	if (new LeaveAgentStatusPredicdate().evaluate(agent)) {
-            	        		msg = ScPtMsgVO.warnMsg("共享服務業務員皆已離職，若為同日執行轉手須至保單單筆轉手作業執行");
-            	        	}        	        		
-        	        	}
-        	        }
-	    		}
-	    		
-	    	}
-    	}
-    	return msg;
     }
     
     /**
@@ -2943,11 +2673,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      */
     private ScPtMsgVO validatePolicyHolder(long policyId, String certiCode) {
         ScPtMsgVO msg = null;
-        
-//        if (!contractMasterService.validatePolicyHolder(policyId, certiCode)) {
-            msg = ScPtMsgVO.error("MSG_1262205"); //要保人錯誤
-//        }
-        
+        msg = ScPtMsgVO.error("MSG_1262205"); //要保人錯誤
         return msg;
     }
 
@@ -2964,11 +2690,7 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      */
     private ScPtMsgVO validatePolicyInsuredList(long policyId, String certiCode) {
         ScPtMsgVO msg = null;
-        
-//        if (!contractMasterService.validatePolicyInsuredList(policyId, certiCode)) {
-            msg = ScPtMsgVO.error("MSG_1262206"); // 被保人錯誤
-//        }
-        
+        msg = ScPtMsgVO.error("MSG_1262206"); // 被保人錯誤
         return msg;
     }
     
@@ -3108,7 +2830,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         ScPtMsgVO msg = null;
         
         if (!ObjectUtils.equals(serviceRoleChannelOrg.getParentId(), agentRoleChannelOrg.getParentId())) {
-            msg = ScPtMsgVO.warn("MSG_1256128").append(" : " + agentRoleChannelOrg.getChannelCode()); //須相同經代公司
+            msg = ScPtMsgVO.warn("MSG_1256128");
+//            		.append(" : " + agentRoleChannelOrg.getChannelCode()); //須相同經代公司
         }
         
         return msg;
@@ -3228,32 +2951,23 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param policyId
      * @return
      */
-    private ScPtValidateResult warnCaseExist(long policyId, final Long caseId, final Date directorDate) {
-        final ScPtValidateResult result = new ScPtValidateResult();
+    private ScPtValidateResult warnCaseExist(long policyId, Long caseId) {
+        ScPtValidateResult result = new ScPtValidateResult();
                         
-        final List<Map<String, Object>> caseInfo = scPtQueryService.getUnArchiveCasePolicy(policyId);
+        List<Map<String, Object>> caseInfo = scPtQueryService.getUnArchiveCasePolicy(policyId);
         
-        boolean checkDiffDirectorDate = true;
-    	
-        for (Map<String, Object> map : caseInfo) {
-        	
-        	//檢核保單主管確認日是否一致
-        	if (directorDate != null && checkDiffDirectorDate) {
-        		if (scPtPoliciesDetailService.containDifferentDirectorDate(MapUtils.getLong(map, "CASE_ID"), directorDate)) {
-        			checkDiffDirectorDate = false;
-        			
-        			result.addIgnoreNull(ScPtMsgVO.warnMsg("主管確認日與受理案件中其他保單不同"));
-        		}
-        	}
-        	
-            if (caseId != null && caseId.equals(MapUtils.getLong(map, "CASE_ID"))) {
-                continue;
+        if (!caseInfo.isEmpty()) {
+            
+            for (Map<String, Object> map : caseInfo) {
+                
+                if (caseId != null && caseId.equals(MapUtils.getLong(map, "CASE_ID"))) {
+                    continue;
+                }
+                final Map<String, String> parameter = new HashMap<String, String>();
+                parameter.put("caseNo", ObjectUtils.toString(map.get("CASE_NO")));
+                result.addIgnoreNull(ScPtMsgVO.warn("MSG_1261558", parameter));
             }
-            final Map<String, String> parameter = new HashMap<String, String>();
-            parameter.put("caseNo", ObjectUtils.toString(map.get("CASE_NO")));
-            result.addIgnoreNull(ScPtMsgVO.warn("MSG_1261558", parameter));
         }
-        
         return result;
     }
     
@@ -3263,8 +2977,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
      * @param policyId
      * @return
      */
-    private ScPtValidateResult warnCaseExist(long policyId, final Date directorDate) {
-        return this.warnCaseExist(policyId, null, directorDate);
+    private ScPtValidateResult warnCaseExist(long policyId) {
+        return this.warnCaseExist(policyId, null);
     }
     
     /**
@@ -3303,41 +3017,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         return this.warnCaseExists(grpPolicyCode, null);
     }
     
-    private ScPtMsgVO warnShareCommMerged(ScPolicyTransferVO vo) {
-    	if (vo.isPolicyShareComm() && vo.getOriNewCommAgentId() != null) {
-    		return ScPtMsgVO.warnMsg("轉入共享領佣業務員");
-    	}
-    	return null;
-    }
-    
-    private ScPtMsgVO warnShareServiceMerged(ScPolicyTransferVO vo) {
-    	if (vo.isPolicyShareService() && vo.getOriNewServiceAgentId() != null) {
-    		return ScPtMsgVO.warnMsg("轉入共享服務業務員");
-    	}
-    	return null;
-    }
-    
-    private ScPtMsgVO warnShareCommMerged(CommonPtFileVO vo) {
-    	if (vo.validateTransferToCommShareCase()) {
-    		return ScPtMsgVO.warnMsg("共享件應優先轉入共享領佣業務員");
-    	}
-    	return null;
-    }
-    
-    private ScPtMsgVO warnShareServiceMerged(CommonPtFileVO vo) {
-    	if (vo.validateTransferToServiceShareCase()) {
-    		return ScPtMsgVO.warnMsg("共享件應優先轉入共享服務業務員");
-    	}
-    	return null;
-    }
-    
-    private ScPtMsgVO warnNotShareCommMerged(CommonPtFileVO vo,boolean notShareCommStatus ) {
-    	if (vo.validateTransferToNotCommShareCase( notShareCommStatus)) {
-    		return ScPtMsgVO.warnMsg("非共享件應優先轉入服務業務員");
-    	}
-    	return null;
-    }
-    
     /**
      * <p>Description : 原業務員在職，佣金選擇為N,"", S時不可轉給虛擬業務員</p>
      * <p>Created By : TGL155</p>
@@ -3362,7 +3041,28 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
 //        return msg;
 //    }
     
-    
+    /**
+     * <p>Description : copy from agentInfoRegisterCodeValidator 此保單需要的資格證種類</p>
+     * <p>Created By : TGL155</p>
+     * <p>Create Time : Dec 6, 2016</p>
+     * @param coverages
+     * @param applyDate
+     * @return
+     */
+    private Set<Integer> getQualificationTypes(long policyId, Date applyDate) {
+        Set<Integer> types = new HashSet<Integer>();
+        Set<Integer> productIds = contractMasterService.getDistinctProductId(policyId);
+
+        for (Integer productId : productIds) {
+            com.ebao.ls.pa.pub.ref.vo.prd.ProductVO product = productService.getProduct(productId.longValue(), applyDate);
+            // Get product's qualification type.
+            List<Integer> qTypes = product.getQualificationTypes();
+            for (Integer type : qTypes) {
+                types.add(type);
+            }
+        }
+        return types;
+    }
     /**
      * <p>Description : 判斷是否為虛擬</p>
      * <p>Created By : TGL155</p>
@@ -3378,22 +3078,6 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     }
     
     /**
-     * <p>Description : copy from agentInfoRegisterCodeValidator 此保單需要的資格證種類</p>
-     * <p>Created By : TGL155</p>
-     * <p>Create Time : Dec 6, 2016</p>
-     * @param coverages
-     * @param applyDate
-     * @return
-     */
-    private Set<Integer> getQualificationTypes(ScPtValidateContext context, long policyId) {
-    	
-    	if (context.getPolicyTest(policyId) == null) {
-    		context.cachePolicyTest(policyId, contractMasterService.getQualificationTypes(policyId));
-    	}
-    	return context.getPolicyTest(policyId);
-    }
-    
-    /**
      * <p>Description : 取得業務員資格烈表(with context cache) </p>
      * <p>Created By : TGL155</p>
      * <p>Create Time : May 31, 2017</p>
@@ -3404,7 +3088,8 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
     private Set<Integer> getAgentTestType(ScPtValidateContext context, long agentId) {
         
         if (context.getAgentTest(agentId) == null) {
-            context.cacheAgentTest(agentId, individualAgentService.getAgentValidateTestInfoTypeSet(agentId));
+            final Set<Integer> agentTypeSet = individualAgentService.getAgentValidateTestInfoTypeSet(agentId);
+            context.cacheAgentTest(agentId, agentTypeSet);
         }
         return context.getAgentTest(agentId);
     }
@@ -3426,6 +3111,4 @@ public class ScPtValidateServiceImpl implements ScPtValidateService {
         }
         return false;
     }
-
-	
 }
